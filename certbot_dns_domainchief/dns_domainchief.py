@@ -1,12 +1,19 @@
 """DNS Authenticator for Domain Chief DNS."""
 import logging
-from base64 import b64encode
+from importlib.metadata import version
 from typing import Any
 from typing import Callable
 from typing import Tuple
 from typing import Optional
 
 import requests
+
+try:
+    _version = version("certbot-dns-domainchief")
+except Exception:
+    _version = "unknown"
+
+USER_AGENT = f"certbot-dns-domainchief/{_version}"
 
 from certbot import errors
 from certbot.plugins import dns_common
@@ -78,7 +85,11 @@ class _DomainChiefClient:
     """
 
     def __init__(self, api_key: str) -> None:
-        self.headers = {"Accept": "application/json", "Authorization": f'Bearer {api_key}'}
+        self.headers = {
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+            "Authorization": f'Bearer {api_key}',
+        }
 
     def add_txt_record(
             self, domain: str, record_name: str, record_content: str

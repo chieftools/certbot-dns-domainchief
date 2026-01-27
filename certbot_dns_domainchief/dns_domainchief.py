@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 API_BASE_URL = "https://domain.chief.app/api/v1"
 CREDENTIAL_URL = "https://domain.chief.app/api/tokens"
 DEFAULT_PROPAGATION_SECONDS = 60
+DEFAULT_TTL = 300
 
 
 class Authenticator(dns_common.DNSAuthenticator):
@@ -104,37 +105,32 @@ class _DomainChiefClient:
         """
 
         domain_id, domain_name = self._find_domain_id(domain)
-
-        # Set content type because we are posting
-        post_headers = self.headers
-        post_headers["Content-Type"] = "application/json"
-
-        # Check if record_name contains zone_name (it should) and remove it
-        if record_name.endswith(domain_name):
-            record_name = record_name[: -(len(domain_name) + 1)]
+        record_name = self._strip_domain_suffix(record_name, domain_name)
 
         payload = {
             "type": "TXT",
             "name": record_name,
             "content": record_content,
+            "ttl": DEFAULT_TTL,
             "metadata": {
                 "automation": "certbot-dns-domainchief"
             }
         }
 
+        logger.debug("Attempting to add record to zone %s: %s", domain_id, payload)
+
         response = requests.post(
             f"{API_BASE_URL}/domains/{domain_id}/dns/records",
             json=payload,
-            headers=post_headers,
+            headers=self.headers,
         )
-        logger.debug("Attempting to add record to zone %s: %s", domain_id, payload)
 
         if response.status_code != 200:
             raise errors.PluginError(
                 f"API error ({response.status_code}): {response.text}"
             )
 
-        record_id = self._find_txt_record_id(domain_id, domain_name, record_name, record_content)
+        record_id = self._find_txt_record_id(domain_id, record_name, record_content)
         logger.debug("Successfully added TXT record with record_id: %s", record_id)
 
     def del_txt_record(
@@ -159,32 +155,27 @@ class _DomainChiefClient:
             logger.debug("Encountered error finding domain_id during deletion: %s", e)
             return
 
-        # Check if record_name contains zone_name (it should) and remove it
-        if record_name.endswith(domain_name):
-            record_name = record_name[: -(len(domain_name) + 1)]
+        record_name = self._strip_domain_suffix(record_name, domain_name)
+        record_id = self._find_txt_record_id(domain_id, record_name, record_content)
 
-        if domain_id:
-            record_id = self._find_txt_record_id(domain_id, domain_name, record_name, record_content)
-            if record_id:
-                response = requests.delete(
-                    f"{API_BASE_URL}/domains/{domain_id}/dns/records/{record_id}",
-                    headers=self.headers,
+        if record_id:
+            response = requests.delete(
+                f"{API_BASE_URL}/domains/{domain_id}/dns/records/{record_id}",
+                headers=self.headers,
+            )
+            if response.status_code != 200:
+                logger.error(
+                    "API error (%s): %s", response.status_code, response.text
                 )
-                if response.status_code != 200:
-                    logger.error(
-                        "API error (%s): %s", response.status_code, response.text
-                    )
-            else:
-                logger.debug("TXT record not found; no cleanup needed.")
         else:
-            logger.debug("Zone not found; no cleanup needed.")
+            logger.debug("TXT record not found; no cleanup needed.")
 
     def _find_domain_id(self, domain: str) -> Tuple[str, str]:
         """
         Find the domain ID for a given domain name.
 
         :param str domain: The domain name for which to find the ID.
-        :returns: The ID, if found.
+        :returns: The ID and domain name, if found.
         :rtype: tuple(str, str)
         :raises certbot.errors.PluginError: if no domain is found.
         """
@@ -192,44 +183,42 @@ class _DomainChiefClient:
         zone_name_guesses = dns_common.base_domain_name_guesses(domain)
 
         for zone_name_guess in zone_name_guesses:
-            # Test if zone_name_guess contains a `.` otherwise skip it
+            # Skip TLDs without a dot (e.g., "com", "org")
             if "." not in zone_name_guess:
                 continue
 
-            # We prepend the query with a `!` to force an exact match
             response = requests.get(
                 f"{API_BASE_URL}/domains/{zone_name_guess}",
                 headers=self.headers,
             )
+
+            # Domain not found, try the next guess
+            if response.status_code == 404:
+                continue
 
             if response.status_code != 200:
                 raise errors.PluginError(
                     f"API error ({response.status_code}): {response.text}"
                 )
 
-            response = response.json()
-            if len(response["data"]) == 1:
-                return response["data"]["id"], zone_name_guess
+            data = response.json().get("data")
+            if data and "id" in data:
+                return data["id"], zone_name_guess
 
         raise errors.PluginError("Could not find domain in account.")
 
     def _find_txt_record_id(
-            self, domain_id: str, domain_name: str, record_name: str, record_content: str
+            self, domain_id: str, record_name: str, record_content: str
     ) -> Optional[str]:
         """
         Find the record_id for a TXT record with the given name and content.
 
         :param str domain_id: The domain_id which contains the record.
-        :param str domain_name: The domain name.
         :param str record_name: The record name (typically beginning with '_acme-challenge.').
         :param str record_content: The record content (typically the challenge validation).
         :returns: The record_id, if found.
         :rtype: str
         """
-
-        # Check if record_name contains zone_name (it should) and remove it
-        if record_name.endswith(domain_name):
-            record_name = record_name[: -(len(domain_name) + 1)]
 
         response = requests.get(
             f"{API_BASE_URL}/domains/{domain_id}/dns/records?query={record_name}&metadata[automation]=certbot-dns-domainchief",
@@ -253,3 +242,17 @@ class _DomainChiefClient:
 
         logger.debug("Unable to find TXT record.")
         return None
+
+    @staticmethod
+    def _strip_domain_suffix(record_name: str, domain_name: str) -> str:
+        """
+        Strip the domain suffix from a record name.
+
+        :param str record_name: The full record name (e.g., '_acme-challenge.example.com').
+        :param str domain_name: The domain name to strip (e.g., 'example.com').
+        :returns: The record name without the domain suffix (e.g., '_acme-challenge').
+        :rtype: str
+        """
+        if record_name.endswith(domain_name):
+            return record_name[: -(len(domain_name) + 1)]
+        return record_name

@@ -1,0 +1,41 @@
+name: certbot-dns-domainchief
+base: core24
+summary: Domain Chief DNS Authenticator plugin for Certbot
+description: Domain Chief DNS Authenticator plugin for Certbot
+grade: stable
+confinement: strict
+adopt-info: certbot-dns-domainchief
+platforms:
+  amd64:
+  arm64:
+  armhf:
+
+parts:
+  certbot-dns-domainchief:
+    plugin: python
+    source: .
+    override-pull: |
+        snapcraftctl pull
+        snapcraftctl set-version `grep ^version $SNAPCRAFT_PART_SRC/setup.py | cut -f2 -d= | tr -d '"[:space:]'`
+    build-environment:
+      - SNAP_BUILD: "True"
+  certbot-metadata:
+    plugin: dump
+    source: .
+    stage: [setup.py, certbot-shared]
+    override-pull: |
+        snapcraftctl pull
+        mkdir -p $SNAPCRAFT_PART_SRC/certbot-shared
+
+slots:
+  certbot:
+    interface: content
+    content: certbot-1
+    read:
+      - $SNAP/lib/python3.12/site-packages
+
+plugs:
+  certbot-metadata:
+    interface: content
+    content: metadata-1
+    target: $SNAP/certbot-shared

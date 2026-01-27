@@ -23,12 +23,14 @@ logger = logging.getLogger(__name__)
 
 API_BASE_URL = "https://domain.chief.app/api/v1"
 CREDENTIAL_URL = "https://domain.chief.app/api/tokens"
-DEFAULT_PROPAGATION_SECONDS = 60
+
 DEFAULT_TTL = 300
+DEFAULT_PROPAGATION_SECONDS = 60
 
 
 class Authenticator(dns_common.DNSAuthenticator):
-    """DNS Authenticator for Domain Chief
+    """
+    DNS Authenticator for Domain Chief
 
     This Authenticator uses the Domain Chief API to fulfill a dns-01 challenge.
     """
@@ -125,12 +127,12 @@ class _DomainChiefClient:
             headers=self.headers,
         )
 
-        if response.status_code != 200:
+        if not response.ok:
             raise errors.PluginError(
                 f"API error ({response.status_code}): {response.text}"
             )
 
-        record_id = self._find_txt_record_id(domain_id, record_name, record_content)
+        record_id = response.json().get("data", {}).get("id")
         logger.debug("Successfully added TXT record with record_id: %s", record_id)
 
     def del_txt_record(
@@ -163,7 +165,8 @@ class _DomainChiefClient:
                 f"{API_BASE_URL}/domains/{domain_id}/dns/records/{record_id}",
                 headers=self.headers,
             )
-            if response.status_code != 200:
+
+            if not response.ok:
                 logger.error(
                     "API error (%s): %s", response.status_code, response.text
                 )
@@ -196,7 +199,7 @@ class _DomainChiefClient:
             if response.status_code == 404:
                 continue
 
-            if response.status_code != 200:
+            if not response.ok:
                 raise errors.PluginError(
                     f"API error ({response.status_code}): {response.text}"
                 )
@@ -225,13 +228,13 @@ class _DomainChiefClient:
             headers=self.headers
         )
 
-        if response.status_code != 200:
+        if not response.ok:
             raise errors.PluginError(
                 f"API error ({response.status_code}): {response.text}"
             )
 
         # Iterate through records and find the TXT record with the right name and value
-        for record in response.json()["data"]:
+        for record in response.json().get("data", []):
             if (
                     record["type"] == "TXT"
                     and record["name"] == record_name

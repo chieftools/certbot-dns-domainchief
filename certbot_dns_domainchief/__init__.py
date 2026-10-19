@@ -43,9 +43,10 @@ Credentials
 
 Use of this plugin requires a configuration file containing Domain Chief API
 credentials, obtained from your
-`Domain Chief account <https://domain.chief.app/api/tokens>`_.
+`Domain Chief account <https://domain.chief.app/api/token/create?scopes=domainchief:acme:write&ref=certbot-dns-domainchief>`_.
 
-Domain Chief credentials are not scoped and give access to all account features.
+Create the credentials with only the ``domainchief:acme:write`` scope. This scope
+only allows publishing and deleting TXT records on ``_acme-challenge`` names.
 
 .. code-block:: ini
    :name: certbot_domainchief_credentials.ini
@@ -61,7 +62,7 @@ to this file for use during renewal, but does not store the file's contents.
 .. caution::
    You should protect these API credentials as you would the password to your
    Domain Chief account. Users who can read this file can use these credentials
-   to issue arbitrary API calls on your behalf. Users who can cause Certbot to
+   to publish ACME challenges on your behalf. Users who can cause Certbot to
    run using these credentials can complete a ``dns-01`` challenge to acquire
    new certificates or revoke existing certificates for associated domains,
    even if those domains aren't being managed by this server.

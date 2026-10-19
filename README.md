@@ -42,9 +42,9 @@ You need to supply Certbot with a Domain Chief API key, this is an example of ho
 dns_domainchief_api_key = ctp_...
 ```
 
-You can create a new API key [here](https://domain.chief.app/api/token/create?ref=certbot-dns-domainchief), ensure it has the `domainchief` scope and has the correct team selected.
+You can create a new API key [here](https://domain.chief.app/api/token/create?scopes=domainchief:acme:write&ref=certbot-dns-domainchief), ensure it has only the `domainchief:acme:write` scope and has the correct team selected.
 
-Keep in mind that the credentials file should be readable only by the user running Certbot and the credentials cannot be scoped, so they can be used to perform any action on your behalf if compromised.
+The `domainchief:acme:write` scope only allows publishing and deleting TXT records on `_acme-challenge` names, it cannot read your domains or change any other DNS record. Keep in mind that the credentials file should still be readable only by the user running Certbot, because anyone holding the key can complete DNS-01 challenges and obtain certificates for the domains in your team.
 
 ## Examples
 

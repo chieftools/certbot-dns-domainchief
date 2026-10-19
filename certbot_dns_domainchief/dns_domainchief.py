@@ -3,7 +3,6 @@ import logging
 from importlib.metadata import version
 from typing import Any
 from typing import Callable
-from typing import Tuple
 from typing import Optional
 
 import requests
@@ -22,9 +21,8 @@ from certbot.plugins.dns_common import CredentialsConfiguration
 logger = logging.getLogger(__name__)
 
 API_BASE_URL = "https://domain.chief.app/api/v1"
-CREDENTIAL_URL = "https://domain.chief.app/api/tokens"
+CREDENTIAL_URL = "https://domain.chief.app/api/token/create?scopes=domainchief:acme:write&ref=certbot-dns-domainchief"
 
-DEFAULT_TTL = 300
 DEFAULT_PROPAGATION_SECONDS = 60
 
 
@@ -98,31 +96,26 @@ class _DomainChiefClient:
             self, domain: str, record_name: str, record_content: str
     ) -> None:
         """
-        Add a TXT record using the supplied information.
+        Publish an ACME challenge value using the supplied information.
 
-        :param str domain: The domain to use to look up the Domain Chief domain ID.
+        The Domain Chief API resolves the domain from the record name itself, so the
+        domain is only used for logging.
+
+        :param str domain: The domain the certificate is requested for.
         :param str record_name: The record name (typically beginning with '_acme-challenge.').
         :param str record_content: The record content (typically the challenge validation).
         :raises certbot.errors.PluginError: if an error occurs communicating with the Domain Chief API
         """
 
-        domain_id, domain_name = self._find_domain_id(domain)
-        record_name = self._strip_domain_suffix(record_name, domain_name)
-
         payload = {
-            "type": "TXT",
             "name": record_name,
-            "content": record_content,
-            "ttl": DEFAULT_TTL,
-            "metadata": {
-                "automation": "certbot-dns-domainchief"
-            }
+            "value": record_content,
         }
 
-        logger.debug("Attempting to add record to zone %s: %s", domain_id, payload)
+        logger.debug("Attempting to publish challenge for %s: %s", domain, payload)
 
         response = requests.post(
-            f"{API_BASE_URL}/domains/{domain_id}/dns/records",
+            f"{API_BASE_URL}/acme/challenges",
             json=payload,
             headers=self.headers,
         )
@@ -133,129 +126,40 @@ class _DomainChiefClient:
             )
 
         record_id = response.json().get("data", {}).get("id")
-        logger.debug("Successfully added TXT record with record_id: %s", record_id)
+        logger.debug("Successfully published challenge with record_id: %s", record_id)
 
     def del_txt_record(
             self, domain: str, record_name: str, record_content: str
     ) -> None:
         """
-        Delete a TXT record using the supplied information.
+        Delete an ACME challenge value using the supplied information.
 
-        Note that both the record's name and content are used to ensure that similar records
-        created concurrently (e.g., due to concurrent invocations of this plugin) are not deleted.
+        Only the record with this exact name and value is deleted, so challenges created
+        concurrently (e.g., due to concurrent invocations of this plugin) are kept.
 
         Failures are logged, but not raised.
 
-        :param str domain: The domain to use to look up the Domain Chief domain ID.
+        :param str domain: The domain the certificate is requested for.
         :param str record_name: The record name (typically beginning with '_acme-challenge.').
         :param str record_content: The record content (typically the challenge validation).
         """
+
+        logger.debug("Attempting to delete challenge for %s: %s", domain, record_name)
 
         try:
-            domain_id, domain_name = self._find_domain_id(domain)
-        except errors.PluginError as e:
-            logger.debug("Encountered error finding domain_id during deletion: %s", e)
+            response = requests.delete(
+                f"{API_BASE_URL}/acme/challenges",
+                params={
+                    "name": record_name,
+                    "value": record_content,
+                },
+                headers=self.headers,
+            )
+        except requests.RequestException as e:
+            logger.error("Encountered error deleting challenge: %s", e)
             return
 
-        record_name = self._strip_domain_suffix(record_name, domain_name)
-        record_id = self._find_txt_record_id(domain_id, record_name, record_content)
-
-        if record_id:
-            response = requests.delete(
-                f"{API_BASE_URL}/domains/{domain_id}/dns/records/{record_id}",
-                headers=self.headers,
-            )
-
-            if not response.ok:
-                logger.error(
-                    "API error (%s): %s", response.status_code, response.text
-                )
-        else:
-            logger.debug("TXT record not found; no cleanup needed.")
-
-    def _find_domain_id(self, domain: str) -> Tuple[str, str]:
-        """
-        Find the domain ID for a given domain name.
-
-        :param str domain: The domain name for which to find the ID.
-        :returns: The ID and domain name, if found.
-        :rtype: tuple(str, str)
-        :raises certbot.errors.PluginError: if no domain is found.
-        """
-
-        zone_name_guesses = dns_common.base_domain_name_guesses(domain)
-
-        for zone_name_guess in zone_name_guesses:
-            # Skip TLDs without a dot (e.g., "com", "org")
-            if "." not in zone_name_guess:
-                continue
-
-            response = requests.get(
-                f"{API_BASE_URL}/domains/{zone_name_guess}",
-                headers=self.headers,
-            )
-
-            # Domain not found, try the next guess
-            if response.status_code == 404:
-                continue
-
-            if not response.ok:
-                raise errors.PluginError(
-                    f"API error ({response.status_code}): {response.text}"
-                )
-
-            data = response.json().get("data")
-            if data and "id" in data:
-                return data["id"], zone_name_guess
-
-        raise errors.PluginError("Could not find domain in account.")
-
-    def _find_txt_record_id(
-            self, domain_id: str, record_name: str, record_content: str
-    ) -> Optional[str]:
-        """
-        Find the record_id for a TXT record with the given name and content.
-
-        :param str domain_id: The domain_id which contains the record.
-        :param str record_name: The record name (typically beginning with '_acme-challenge.').
-        :param str record_content: The record content (typically the challenge validation).
-        :returns: The record_id, if found.
-        :rtype: str
-        """
-
-        response = requests.get(
-            f"{API_BASE_URL}/domains/{domain_id}/dns/records?query={record_name}&metadata[automation]=certbot-dns-domainchief",
-            headers=self.headers
-        )
-
         if not response.ok:
-            raise errors.PluginError(
-                f"API error ({response.status_code}): {response.text}"
+            logger.error(
+                "API error (%s): %s", response.status_code, response.text
             )
-
-        # Iterate through records and find the TXT record with the right name and value
-        for record in response.json().get("data", []):
-            if (
-                    record["type"] == "TXT"
-                    and record["name"] == record_name
-                    # record content is wrapped in quotes for TXT records
-                    and record["content"] == f'"{record_content}"'
-            ):
-                return record["id"]
-
-        logger.debug("Unable to find TXT record.")
-        return None
-
-    @staticmethod
-    def _strip_domain_suffix(record_name: str, domain_name: str) -> str:
-        """
-        Strip the domain suffix from a record name.
-
-        :param str record_name: The full record name (e.g., '_acme-challenge.example.com').
-        :param str domain_name: The domain name to strip (e.g., 'example.com').
-        :returns: The record name without the domain suffix (e.g., '_acme-challenge').
-        :rtype: str
-        """
-        if record_name.endswith(domain_name):
-            return record_name[: -(len(domain_name) + 1)]
-        return record_name
